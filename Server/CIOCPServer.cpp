@@ -503,7 +503,7 @@ BOOL CIOCPServer::Start(char *pBindAddr, int port)
 		return FALSE;
 	}
 
-	::listen(m_sListen,200);
+	::listen(m_sListen,SOMAXCONN);
 
 	m_hCompletion = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE,0,0,0);
 
@@ -538,7 +538,6 @@ BOOL CIOCPServer::Start(char *pBindAddr, int port)
 
 	return TRUE;
 }
-
 
 DWORD WINAPI CIOCPServer::_ListenThreadProc(LPVOID lpParam)
 {
@@ -700,172 +699,188 @@ DWORD WINAPI CIOCPServer::_WorkerThreadProc(LPVOID lpParam)
 
 void CIOCPServer::HandleIO(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error)
 {
-	if (pContext != NULL)
+	switch(pBuffer->operation)
 	{
-		::EnterCriticalSection(&pContext->lock);
-		if (pBuffer->operation == OP_READ)
-		{
-			pContext->outStandingRecv--;
-		}else if(pBuffer->operation == OP_WRITE)
-		{
-			pContext->outStandingSend--;
-		}
-		::LeaveCriticalSection(&pContext->lock);
+	case OP_ACCETP:
+		return _HandleAccept(pContext,pBuffer,dwTrans,error);
+	case OP_READ:
+		return _HandleRead(pContext,pBuffer,dwTrans,error);
+	case OP_WRITE:
+		return _HandleWrite(pContext,pBuffer,dwTrans,error);
+	default:
+		break;
+	}
+}
 
-		if (pContext->bClosing)
-		{
-			if(pContext->outStandingRecv == 0 && pContext->outStandingSend == 0)
-			{
-				ReleaseContext(pContext);
-			}
+void CIOCPServer::_HandleAccept(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error)
+{
+	RemovePendingAccept(pBuffer);
 
-			ReleaseBuffer(pBuffer);
-			return;
-		}
+	if (error != NO_ERROR || dwTrans == 0)
+	{
+		CloseBufferClient(pBuffer);
+		ReleaseBuffer(pBuffer);
 	}else
 	{
-		RemovePendingAccept(pBuffer);
-	}
-
-
-	if (error != NO_ERROR)
-	{
-		if (pBuffer->operation != OP_ACCETP)
+		CIOCPContext *pClient = AllocateContext(pBuffer->sClient);
+		if (pClient != NULL)
 		{
-			OnConnectionError(pContext,pBuffer,error);
-			CloseAConnection(pContext);
-			if (pContext->outStandingRecv == 0 && pContext->outStandingSend == 0)
+			if(AddAConnection(pClient))
 			{
-				ReleaseContext(pContext);
-			}
-		}else
-		{
-			if (pBuffer->sClient != INVALID_SOCKET)
-			{
-				::closesocket(pBuffer->sClient);
-				pBuffer->sClient = INVALID_SOCKET;
-			}
-		}
+				int localLen,remoteLen;
+				LPSOCKADDR pLocalAddr,pRemoteAddr;
+				m_lpfnGetAcceptExSockaddrs(
+					pBuffer->buff,
+					pBuffer->nlen - ((sizeof(sockaddr_in) + 16) + 2),
+					sizeof(sockaddr_in) + 16,
+					sizeof(sockaddr_in) + 16,
+					(SOCKADDR **)&pLocalAddr,
+					&localLen,
+					(SOCKADDR **)&pRemoteAddr,
+					&remoteLen);
 
-		ReleaseBuffer(pBuffer);
-		return;
-	}
+				memcpy(&pClient->addrLocal,pLocalAddr,localLen);
+				memcpy(&pClient->addrRemote,pRemoteAddr,remoteLen);
 
-	if (pBuffer->operation = OP_ACCETP)
-	{
-		if (dwTrans == 0)
-		{
-			if (pBuffer->sClient != INVALID_SOCKET)
-			{
-				::closesocket(pBuffer->sClient);
-				pBuffer->sClient = INVALID_SOCKET;
-			}
-		}else
-		{
-			CIOCPContext *pClient = AllocateContext(pBuffer->sClient);
-			if (pClient != NULL)
-			{
-				if(AddAConnection(pClient))
+				::CreateIoCompletionPort((HANDLE)pClient->s,m_hCompletion,(DWORD)pClient,0);
+
+				pBuffer->nlen = dwTrans;
+				OnConnectionEstablished(pClient,pBuffer);
+
+				for(int i = 0; i<5; i++)
 				{
-					int localLen,remoteLen;
-					LPSOCKADDR pLocalAddr,pRemoteAddr;
-					m_lpfnGetAcceptExSockaddrs(
-						pBuffer->buff,
-						pBuffer->nlen - ((sizeof(sockaddr_in) + 16) + 2),
-						sizeof(sockaddr_in) + 16,
-						sizeof(sockaddr_in) + 16,
-						(SOCKADDR **)&pLocalAddr,
-						&localLen,
-						(SOCKADDR **)&pRemoteAddr,
-						&remoteLen);
-
-					memcpy(&pClient->addrLocal,pLocalAddr,localLen);
-					memcpy(&pClient->addrRemote,pRemoteAddr,remoteLen);
-
-					::CreateIoCompletionPort((HANDLE)pClient->s,m_hCompletion,(DWORD)pClient,0);
-
-					pBuffer->nlen = dwTrans;
-					OnConnectionEstablished(pClient,pBuffer);
-
-					for(int i = 0; i<5; i++)
+					CIOCPBuffer *pBuffer = AllocateBuffer(BUFFER_SIZE);
+					if (pBuffer != NULL)
 					{
-						CIOCPBuffer *pBuffer = AllocateBuffer(BUFFER_SIZE);
-						if (pBuffer != NULL)
+						if (PostRecv(pClient,pBuffer) == FALSE)
 						{
-							if (PostRecv(pClient,pBuffer) == FALSE)
-							{
-								CloseAConnection(pClient);
-								break;
-							}
+							CloseAConnection(pClient);
+							break;
 						}
 					}
-				}else
-				{
-					CloseAConnection(pClient);
-					ReleaseContext(pClient);
 				}
 			}else
 			{
-				::closesocket(pBuffer->sClient);
-				pBuffer->sClient = INVALID_SOCKET;
+				CloseAConnection(pClient);
+				ReleaseContext(pClient);
 			}
+		}else
+		{
+			CloseBufferClient(pBuffer);
 		}
 		ReleaseBuffer(pBuffer);
+	}
+	
 
-		::InterlockedIncrement(&m_ReportCount);
-		::SetEvent(m_hRepostEvent);
-	}else if (pBuffer->operation == OP_READ)
+	::InterlockedIncrement(&m_ReportCount);
+	::SetEvent(m_hRepostEvent);
+}
+
+void CIOCPServer::_HandleRead(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error)
+{
+	::EnterCriticalSection(&pContext->lock);
+	 if(pBuffer->operation == OP_READ)
 	{
-		if (dwTrans == 0)
-		{
-			pBuffer->nlen = 0;
-			OnConnectionClosing(pContext,pBuffer);
-			CloseAConnection(pContext);
-			if(pContext->outStandingRecv == 0 && pContext->outStandingSend == 0)
-			{
-				ReleaseContext(pContext);
-			}
-			ReleaseBuffer(pBuffer);
-		}else
-		{
-			pBuffer->nlen = dwTrans;
+		pContext->outStandingRecv--;
+	}
+	::LeaveCriticalSection(&pContext->lock);
 
-			CIOCPBuffer *pNext = GetNextReadBuffer(pContext,pBuffer);
-			while (pNext != NULL)
-			{
-				OnReadCompleted(pContext,pNext);
-				::InterlockedIncrement((LONG*)&pContext->currentReadSequence);
-				ReleaseBuffer(pNext);
-				pNext = GetNextReadBuffer(pContext,NULL);
-			}
+	if (pContext->bClosing)
+	{
+		return ReleaseContextAndBuffer(pContext, pBuffer);
+	}
 
-			CIOCPBuffer *pNew = AllocateBuffer(BUFFER_SIZE);
-			if (pBuffer == NULL || !PostRecv(pContext,pBuffer))
-			{
-				CloseAConnection(pContext);
-			}
+	if (error != NO_ERROR)
+	{
+		return _HandleReadWriteError(pContext,pBuffer,error);
+	}
+
+	if (dwTrans == 0)
+	{
+		pBuffer->nlen = 0;
+		OnConnectionClosing(pContext,pBuffer);
+		CloseAConnection(pContext);
+		ReleaseContextAndBuffer(pContext, pBuffer);
+	}else
+	{
+		pBuffer->nlen = dwTrans;
+
+		CIOCPBuffer *pNext = GetNextReadBuffer(pContext,pBuffer);
+		while (pNext != NULL)
+		{
+			OnReadCompleted(pContext,pNext);
+			::InterlockedIncrement((LONG*)&pContext->currentReadSequence);
+			ReleaseBuffer(pNext);
+			pNext = GetNextReadBuffer(pContext,NULL);
 		}
-	} 
-	else if (pBuffer->operation == OP_WRITE)
-	{
-		if (dwTrans == 0)
-		{
-			pBuffer->nlen = 0;
-			OnConnectionClosing(pContext,pBuffer);
-			CloseAConnection(pContext);
 
-			if(pContext->outStandingRecv == 0 && pContext->outStandingSend == 0)
-			{
-				ReleaseContext(pContext);
-			}
-			ReleaseBuffer(pBuffer);
-		}else
+		CIOCPBuffer *pNew = AllocateBuffer(BUFFER_SIZE);
+		if (pBuffer == NULL || !PostRecv(pContext,pBuffer))
 		{
-			pBuffer->nlen = dwTrans;
-			OnWriteCompleted(pContext,pBuffer);
-			ReleaseBuffer(pBuffer);
+			CloseAConnection(pContext);
 		}
 	}
+}
+
+void CIOCPServer::_HandleWrite(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error)
+{
+	::EnterCriticalSection(&pContext->lock);
+	if(pBuffer->operation == OP_WRITE)
+	{
+		pContext->outStandingSend--;
+	}
+	::LeaveCriticalSection(&pContext->lock);
+
+	if (pContext->bClosing)
+	{
+		return ReleaseContextAndBuffer(pContext, pBuffer);
+	}
+
+	if (dwTrans == 0)
+	{
+		pBuffer->nlen = 0;
+		OnConnectionClosing(pContext,pBuffer);
+		CloseAConnection(pContext);
+		ReleaseContextAndBuffer(pContext, pBuffer);
+	}else
+	{
+		pBuffer->nlen = dwTrans;
+		OnWriteCompleted(pContext,pBuffer);
+		ReleaseBuffer(pBuffer);
+	}
+}
+
+
+void CIOCPServer::_HandleAcceptError(CIOCPBuffer * pBuffer)
+{
+	CloseBufferClient(pBuffer);
+	ReleaseBuffer(pBuffer);
+}
+
+void CIOCPServer::_HandleReadWriteError(CIOCPContext *pContext,CIOCPBuffer *pBuffer,int error)
+{
+	OnConnectionError(pContext,pBuffer,error);
+	CloseAConnection(pContext);
+	ReleaseContextAndBuffer(pContext,pBuffer);
+}
+
+void CIOCPServer::CloseBufferClient( CIOCPBuffer * pBuffer )
+{
+	if (pBuffer->sClient != INVALID_SOCKET)
+	{
+		::closesocket(pBuffer->sClient);
+		pBuffer->sClient = INVALID_SOCKET;
+	}
+}
+
+void CIOCPServer::ReleaseContextAndBuffer( CIOCPContext * pContext, CIOCPBuffer * pBuffer )
+{
+	if(pContext->outStandingRecv == 0 && pContext->outStandingSend == 0)
+	{
+		ReleaseContext(pContext);
+	}
+
+	ReleaseBuffer(pBuffer);
 }
 
 BOOL CIOCPServer::SendText(CIOCPContext *pContext, char *pszText, int len)

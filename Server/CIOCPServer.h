@@ -103,6 +103,19 @@ protected:
 
 	void HandleIO(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error);
 
+	
+
+	void _HandleWrite(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error);
+	void _HandleRead(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error);
+	void _HandleAccept(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error);
+
+	void _HandleAcceptError(CIOCPBuffer * pBuffer);
+	void _HandleReadWriteError(CIOCPContext *pContext,CIOCPBuffer *pBuffer,int error);
+
+	void CloseBufferClient( CIOCPBuffer * pBuffer );
+	void ReleaseContextAndBuffer( CIOCPContext * pContext, CIOCPBuffer * pBuffer );
+	
+
 	virtual void OnConnectionEstablished(CIOCPContext *pContext, CIOCPBuffer *pBuffer){}
 	virtual void OnConnectionClosing(CIOCPContext *pContext, CIOCPBuffer *pBuffer){}
 	virtual void OnConnectionError(CIOCPContext *pContext, CIOCPBuffer *pBuffer, int error){}
