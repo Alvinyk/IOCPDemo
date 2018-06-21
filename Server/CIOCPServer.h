@@ -101,13 +101,13 @@ protected:
 	BOOL PostSend(CIOCPContext *pContext, CIOCPBuffer *pBuffer);
 	BOOL PostRecv(CIOCPContext *pContext, CIOCPBuffer *pBuffer);
 
-	void HandleIO(CIOCPContext pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error);
+	void HandleIO(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error);
 
-	virtual void OnConnectionEstablished(CIOCPContext *pContext, CIOCPBuffer *pBuffer)=0;
-	virtual void OnConnectionClosing(CIOCPContext *pContext, CIOCPBuffer *pBuffer)=0;
-	virtual void OnConnectionError(CIOCPContext *pContext, CIOCPBuffer *pBuffer, int error)=0;
-	virtual void OnReadCompleted(CIOCPContext *pContext, CIOCPBuffer *pBuffer)=0;
-	virtual void OnWriteCompleted(CIOCPContext *pContext, CIOCPBuffer *pBuffer)=0;
+	virtual void OnConnectionEstablished(CIOCPContext *pContext, CIOCPBuffer *pBuffer){}
+	virtual void OnConnectionClosing(CIOCPContext *pContext, CIOCPBuffer *pBuffer){}
+	virtual void OnConnectionError(CIOCPContext *pContext, CIOCPBuffer *pBuffer, int error){}
+	virtual void OnReadCompleted(CIOCPContext *pContext, CIOCPBuffer *pBuffer){}
+	virtual void OnWriteCompleted(CIOCPContext *pContext, CIOCPBuffer *pBuffer){}
 
 private:
 	void InitCfg();
