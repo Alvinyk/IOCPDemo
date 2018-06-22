@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdio.h>
+#include <queue>
 #include "LogLevel.h"
 using namespace std;
 
@@ -12,13 +13,26 @@ class CLogUtil
 {
 public:
 	void static WriteLog2File(char* pszFile,int iLine,ETRAP_LOGLEVEL eLogLevel, char* pszFormat,...);
+	~CLogUtil();
 private:
-	
-	string static getCurDate();
-	//É¾³ý¼ä¸ôÒ»¸öÔÂµÄÎÄ¼þ
-	void static DeleteOldLogFile();
-	void static Write2File(string content);
-	
+	static DWORD WINAPI WriteThreadProc(LPVOID lpParam);
+private:
+	string  getCurDate();
+	//åˆ é™¤é—´éš”ä¸€ä¸ªæœˆçš„æ–‡ä»¶
+	void  DeleteOldLogFile();
+	void  Write2File(string info);
+	void  addLogInfo(string info);
+	string getLogInfo();
+private:
+	CLogUtil();
+	static CLogUtil* Instance;
+	std::queue<string> logInfos;
+	CRITICAL_SECTION m_FreeBufferListLock;
+	HANDLE m_hWriteLogEvent;
+	HANDLE m_hExitThreadEvent;
+	string m_szOldDate;
+	ofstream m_LogFile;
+	bool m_bOpened;
 };
 
 #define W2L(level,pszFmt,...)  	printf(pszFmt,##__VA_ARGS__);\

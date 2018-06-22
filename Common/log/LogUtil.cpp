@@ -1,9 +1,55 @@
 #include <windows.h>
 #include "LogUtil.h"
 
+CLogUtil *CLogUtil::Instance = new CLogUtil();
+
+CLogUtil::CLogUtil()
+{
+	m_bOpened = false;
+	m_szOldDate = "";
+	::InitializeCriticalSection(&m_FreeBufferListLock);
+	m_hWriteLogEvent = ::CreateEvent(NULL,FALSE,FALSE,NULL);
+	m_hExitThreadEvent = ::CreateEvent(NULL,FALSE,FALSE,NULL);
+	::CreateThread(NULL,0,WriteThreadProc,this,0,NULL);
+}
+
+DWORD WINAPI CLogUtil::WriteThreadProc(LPVOID lpParam)
+{
+	CLogUtil *logUtil = (CLogUtil *)lpParam;
+	HANDLE hWaitEvent[2] = {logUtil->m_hWriteLogEvent,logUtil->m_hExitThreadEvent};
+
+	while (TRUE)
+	{
+		int result = ::WaitForMultipleObjects(2,hWaitEvent,FALSE,INFINITE);
+		if (result == WAIT_OBJECT_0)
+		{ 
+			string info = logUtil->getLogInfo();
+			while (info.empty())
+			{
+				logUtil->Write2File(info);
+				info = logUtil->getLogInfo();
+			}
+			
+		}else {
+			::ExitThread(0);
+		}
+	}
+}
+
+CLogUtil::~CLogUtil()
+{
+	std::queue<string> empty;
+	swap(empty,logInfos);
+	SetEvent(m_hExitThreadEvent);
+	if(m_bOpened){
+		m_LogFile.close();
+		m_bOpened = false;
+	}
+}
+
 void CLogUtil::WriteLog2File(char* pszFile,int iLine,ETRAP_LOGLEVEL eLogLevel, char* pszFormat,...)
 {
-	//ÅĞ¶Ï¼¶±ğ
+	//åˆ¤æ–­çº§åˆ«
 	string szLevel;
 	switch (eLogLevel)
 	{
@@ -24,26 +70,27 @@ void CLogUtil::WriteLog2File(char* pszFile,int iLine,ETRAP_LOGLEVEL eLogLevel, c
 		break;
 	}
 
-	//¹¹½¨logĞÅÏ¢Í·
+	//æ„å»ºlogä¿¡æ¯å¤´
 	SYSTEMTIME st;
 	GetLocalTime(&st);
 	char chead[512] = {0};
 	sprintf_s(chead,"[%04d-%02d-%02d %2d:%2d:%2d %d] FILE : %s  LINE : %d\n",
 		st.wYear,st.wMonth,st.wDay,st.wHour,st.wMinute,st.wSecond,st.wMilliseconds,pszFile,iLine);
 
-	//¹¹½¨logĞÅÏ¢Ö÷Ìå
+	//æ„å»ºlogä¿¡æ¯ä¸»ä½“
 	string info;
 	va_list argList;
-	char* pszContent = new char[strlen(pszFormat)+ 1024];
-	memset(pszContent,0,strlen(pszFormat)+ 1024);
+	int bufSize = 1024;
+	char* pszContent = new char[strlen(pszFormat)+ bufSize];
+	memset(pszContent,0,strlen(pszFormat)+ bufSize);
 	va_start(argList, pszFormat);
-	_vsnprintf_s(pszContent, strlen(pszFormat)+ 1024,strlen(pszFormat)+ 1024, pszFormat, argList);
+	_vsnprintf_s(pszContent, strlen(pszFormat)+ bufSize,strlen(pszFormat)+ bufSize, pszFormat, argList);
 	va_end(argList);
 	info.append(chead);
 	info.append("Level:"+szLevel+"   ");
 	info.append(pszContent);
 
-	Write2File(info);
+	Instance->addLogInfo(info);
 }
 
 string CLogUtil::getCurDate()
@@ -56,53 +103,68 @@ string CLogUtil::getCurDate()
 }
 
 
-//É¾³ı¼ä¸ôÒ»¸öÔÂµÄÎÄ¼ş
+//åˆ é™¤é—´éš”ä¸€ä¸ªæœˆçš„æ–‡ä»¶
 void CLogUtil::DeleteOldLogFile()
 {
-	//¶ÁÈ¡ÎÄ¼şÁĞ±í
-	//¼ÆËãÎÄ¼şÈÕÆÚºÍµ±Ç°ÈÕÆÚµÄ²îÖµ
-	//É¾³ı³¬¹ı¼ä¸ôÒ»¸öÔÂµÄÎÄ¼ş
+	//è¯»å–æ–‡ä»¶åˆ—è¡¨
+	//è®¡ç®—æ–‡ä»¶æ—¥æœŸå’Œå½“å‰æ—¥æœŸçš„å·®å€¼
+	//åˆ é™¤è¶…è¿‡é—´éš”ä¸€ä¸ªæœˆçš„æ–‡ä»¶
 }
 
+void  CLogUtil::addLogInfo(string info)
+{
+	EnterCriticalSection(&m_FreeBufferListLock);
+	logInfos.push(info);
+	LeaveCriticalSection(&m_FreeBufferListLock);
+	SetEvent(m_hWriteLogEvent);
+}
+string CLogUtil::getLogInfo()
+{
+	string info = "";
+	EnterCriticalSection(&m_FreeBufferListLock);
+	if(logInfos.empty() == false)
+	{
+		info = logInfos.front();
+		logInfos.pop();
+	}
+	
+	LeaveCriticalSection(&m_FreeBufferListLock);
+	return info;
+}
 
 void CLogUtil::Write2File(string content)
 {
-	//ÅĞ¶ÏlogÄ¿Â¼ÊÇ·ñ´æÔÚ£¬²»´æÔÚÔò´´½¨
+	//åˆ¤æ–­logç›®å½•æ˜¯å¦å­˜åœ¨ï¼Œä¸å­˜åœ¨åˆ™åˆ›å»º
 	string PathName = "log/";
 	if(-1 == _access(PathName.c_str(),0))
 	{
-		//Ä¿Â¼²»´æÔÚ£¬ĞÂ½¨Ä¿Â¼
+		//ç›®å½•ä¸å­˜åœ¨ï¼Œæ–°å»ºç›®å½•
 		CreateDirectoryA(PathName.c_str(), 0); 
 	}
 
-	static FILE* pFile = nullptr;
-	static string szOldDate;
 	string szDate = getCurDate();
-	static ofstream file;
-	static bool bopen = false;
-
-	//Í¬Ò»ÌìµÄÈÕÖ¾·ÅÈëÍ¬Ò»¸öÎÄ¼ş
-	if(szOldDate.compare(szDate) != 0 )
+	//åŒä¸€å¤©çš„æ—¥å¿—æ”¾å…¥åŒä¸€ä¸ªæ–‡ä»¶
+	if(m_szOldDate.compare(szDate) != 0 )
 	{
-		szOldDate = szDate;
-		if(bopen){
-			file.close();
-			bopen = false;
+		m_szOldDate = szDate;
+		if(m_bOpened){
+			m_LogFile.close();
+			m_bOpened = false;
 		}
 	}
 
-	if (!bopen)
+	if (!m_bOpened)
 	{
 		string szFile;
 		szFile.append(PathName);
-		szFile.append(szOldDate);
-		szFile.append(".txt");
-		file.open(szFile,ios::app);
-		bopen = true;
+		szFile.append(m_szOldDate);
+		szFile.append(".log");
+		m_LogFile.open(szFile,ios::app);
+		m_bOpened = true;
 	}
-	if (bopen)
+	if (m_bOpened)
 	{
-		file<<content<<endl;
-		file.flush();
+		m_LogFile<<content<<endl;
+		m_LogFile.flush();
 	}
 }
