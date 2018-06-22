@@ -2,8 +2,8 @@
 #include "../Common/initsock2.h"
 #include <Mswsock.h>
 
-#define BUFFER_SIZE  1024*4 //IOÇëÇó»º³åÇø
-#define MAX_THREAD	 2		//IO·şÎñÏß³ÌÊıÁ¿
+#define BUFFER_SIZE  1024*4 //IOè¯·æ±‚ç¼“å†²åŒº
+#define MAX_THREAD	 2		//IOæœåŠ¡çº¿ç¨‹æ•°é‡
 
 typedef enum EnOperation
 {
@@ -54,52 +54,56 @@ public:
 
 	void CloseAllHandle();
 
-	//¿ªÊ¼·şÎñ
-	BOOL Start(char *pBindAddr, int port);
+	//å¼€å§‹æœåŠ¡
+	BOOL Start();
+	BOOL Start(int port);
 	
-	//Í£Ö¹·şÎñ
+	//åœæ­¢æœåŠ¡
 	void Shutdown();
 
-	//¹Ø±ÕÒ»¸öÁ¬½ÓºÍ¹Ø±ÕËùÓĞÁ¬½Ó
+	//å…³é—­ä¸€ä¸ªè¿æ¥å’Œå…³é—­æ‰€æœ‰è¿æ¥
 	void CloseAConnection(CIOCPContext *pContext);
 	void CloseAllConnections();
 
-	//»ñÈ¡µ±Ç°µÄÁ¬½ÓÊıÁ¿
+	//è·å–å½“å‰çš„è¿æ¥æ•°é‡
 	ULONG GetCurrentConnection();
 
-	//ÏòÖ¸¶¨¿Í»§·¢ËÍÎÄ±¾
+	//å‘æŒ‡å®šå®¢æˆ·å‘é€æ–‡æœ¬
 	BOOL SendText(CIOCPContext *pContext,char *pText,int len);
 
 protected:
-	//ÉêÇëºÍÊÍ·Å»º³åÇø¶ÔÏó
+	//ç”³è¯·å’Œé‡Šæ”¾ç¼“å†²åŒºå¯¹è±¡
 	CIOCPBuffer *AllocateBuffer(int len);
 	void ReleaseBuffer(CIOCPBuffer *pBuffer);
 
-	//ÉêÇëºÍÊÍ·ÅÌ×½Ó×ÖÉÏÏÂÎÄ
+	//ç”³è¯·å’Œé‡Šæ”¾å¥—æ¥å­—ä¸Šä¸‹æ–‡
 	CIOCPContext *AllocateContext(SOCKET s);
 	void ReleaseContext(CIOCPContext *pContext);
 
-	//ÊÍ·Å¿ÕÏĞ»º³åÇø¶ÔÏóÁĞ±í
+	//é‡Šæ”¾ç©ºé—²ç¼“å†²åŒºå¯¹è±¡åˆ—è¡¨
 	void FreeBuffers();
 
-	//ÊÍ·Å¿ÕÏĞÉÏÏÂÎÄ¶ÔÏóÁĞ±í
+	//é‡Šæ”¾ç©ºé—²ä¸Šä¸‹æ–‡å¯¹è±¡åˆ—è¡¨
 	void FreeContexts();
 
-	//ÏòÁ¬½ÓÁĞ±íÖĞÌí¼ÓÒ»¸öÁ¬½Ó
+	//å‘è¿æ¥åˆ—è¡¨ä¸­æ·»åŠ ä¸€ä¸ªè¿æ¥
 	BOOL AddAConnection(CIOCPContext *pContext);
 
-	//²åÈëºÍÒÆ³ıÎ´¾öµÄÇëÇó
+	//æ’å…¥å’Œç§»é™¤æœªå†³çš„è¯·æ±‚
 	BOOL InsertPendingAccept(CIOCPBuffer *pBuffer);
 	BOOL RemovePendingAccept(CIOCPBuffer *pBuffer);
+	BOOL RemoveTimeoutAccepts();
 
-	//»ñÈ¡ÏÂÒ»¸öÒª¶ÁÈ¡µÄ¶ÔÏó
+	//è·å–ä¸‹ä¸€ä¸ªè¦è¯»å–çš„å¯¹è±¡
 	CIOCPBuffer *GetNextReadBuffer(CIOCPContext *pContext, CIOCPBuffer *pBuffer);
 
 
-	//Í¶µİ AcceptIO sendIO readIO
+	//æŠ•é€’ AcceptIO sendIO readIO
 	BOOL PostAccept(CIOCPBuffer *pBuffer);
+	BOOL PostMoreAccept(int limit);
 	BOOL PostSend(CIOCPContext *pContext, CIOCPBuffer *pBuffer);
 	BOOL PostRecv(CIOCPContext *pContext, CIOCPBuffer *pBuffer);
+
 
 	void HandleIO(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWORD dwTrans, int error);
 
@@ -112,7 +116,7 @@ protected:
 	void _HandleAcceptError(CIOCPBuffer * pBuffer);
 	void _HandleReadWriteError(CIOCPContext *pContext,CIOCPBuffer *pBuffer,int error);
 
-	void CloseBufferClient( CIOCPBuffer * pBuffer );
+	void CloseClientSocket( CIOCPBuffer * pBuffer );
 	void ReleaseContextAndBuffer( CIOCPContext * pContext, CIOCPBuffer * pBuffer );
 	
 
@@ -126,11 +130,14 @@ private:
 	void InitCfg();
 	void InitHandle();
 	void InitCriticalSection();
-	void InitCount();
-	void InitList();
+	void InitCountZero();
+	void InitListNull();
 
 private:
 	static DWORD WINAPI _ListenThreadProc(LPVOID lpParam);
+
+	static void CloseListenThread( CIOCPServer * pServer, HANDLE * hWaitEvents);
+
 	static DWORD WINAPI _WorkerThreadProc(LPVOID lpParam);
 	static const CInitSock sm_wsSocket;
 private:
@@ -149,6 +156,7 @@ private:
 	int m_CurrentConnection;
 	CRITICAL_SECTION m_ConnectionListLock;
 
+	HANDLE m_hShutdownEvent;
 	HANDLE m_hAcceptEvent;
 	HANDLE m_hRepostEvent;
 	LONG   m_ReportCount;

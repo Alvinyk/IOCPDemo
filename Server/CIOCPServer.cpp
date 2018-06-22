@@ -1,11 +1,21 @@
 #include "CIOCPServer.h"
 
+#define ERR_SHUT_DOWN -1
+
+typedef enum{
+	EN_ACCEPT_EVENT,
+	EN_REPOST_EVENT,
+	EN_SHUTDOWN_EVENT,
+	EN_BUFF,
+}En_EVENT;
+
+const int Offset2WorkerThread = EN_BUFF;
 const CInitSock CIOCPServer::sm_wsSocket;
 
 CIOCPServer::CIOCPServer()
 {
-	InitList();
-	InitCount();
+	InitListNull();
+	InitCountZero();
 	InitHandle();
 	InitCfg();
 	InitCriticalSection();
@@ -13,7 +23,7 @@ CIOCPServer::CIOCPServer()
 	m_Started = FALSE;
 }
 
-void CIOCPServer::InitList()
+void CIOCPServer::InitListNull()
 {
 	m_pFreeBufferList = NULL;
 	m_pFreeContextList = NULL;
@@ -21,7 +31,7 @@ void CIOCPServer::InitList()
 	m_pConnectionList = NULL;
 }
 
-void CIOCPServer::InitCount()
+void CIOCPServer::InitCountZero()
 {
 	m_FreeBufferCount = 0;
 	m_FreeContextCount = 0;
@@ -42,6 +52,7 @@ void CIOCPServer::InitHandle()
 {
 	m_hAcceptEvent = ::CreateEvent(NULL,FALSE,FALSE,NULL);
 	m_hRepostEvent = ::CreateEvent(NULL,FALSE,FALSE,NULL);
+	m_hShutdownEvent = ::CreateEvent(NULL,FALSE,FALSE,NULL);
 	m_hListenThread = NULL;
 	m_hCompletion = NULL;
 	m_sListen = INVALID_SOCKET;
@@ -57,8 +68,8 @@ void CIOCPServer::InitCfg()
 	m_MaxAccepts = 100;
 	m_MaxSends = 20;
 	m_MaxConnections = 2000;
-	m_FreeBufferCount = 200;
-	m_FreeContextCount = 100;
+	m_MaxFreeBuffers = 200;
+	m_MaxFreeContexts = 1000;
 }
 
 CIOCPServer::~CIOCPServer()
@@ -73,7 +84,7 @@ void CIOCPServer::Shutdown()
 	if(m_Started)
 	{
 		m_Shutdown = TRUE;
-		::SetEvent(m_hAcceptEvent);
+		::SetEvent(m_hShutdownEvent);
 		::WaitForSingleObject(m_hListenThread,INFINITE);
 		m_hListenThread = NULL;
 	}
@@ -176,7 +187,7 @@ void CIOCPServer::ReleaseContext(CIOCPContext *pContext)
 	if(pContext->s != INVALID_SOCKET)
 		::closesocket(pContext->s);
 
-	//Ê×ÏÈÊÍ·Å´ËÌ×½Ó×ÖÉÏµÄÃ»ÓÐ°´Ë³ÐòÍê³ÉµÄ¶ÁIOµÄ»º³åÇø
+	//é¦–å…ˆé‡Šæ”¾æ­¤å¥—æŽ¥å­—ä¸Šçš„æ²¡æœ‰æŒ‰é¡ºåºå®Œæˆçš„è¯»IOçš„ç¼“å†²åŒº
 	CIOCPBuffer *pBuffer;
 	while(pContext->pOutOfOrderReads != NULL)
 	{
@@ -309,6 +320,11 @@ void CIOCPServer::CloseAllConnections()
 	::LeaveCriticalSection(&m_ConnectionListLock);
 }
 
+ULONG CIOCPServer::GetCurrentConnection()
+{
+	return m_CurrentConnection;
+}
+
 BOOL CIOCPServer::InsertPendingAccept(CIOCPBuffer *pBuffer)
 {
 	::EnterCriticalSection(&m_PendingAcceptListLock);
@@ -363,14 +379,14 @@ CIOCPBuffer* CIOCPServer::GetNextReadBuffer(CIOCPContext *pContext, CIOCPBuffer 
 {
 	if(pBuffer != NULL)
 	{
-		//Èç¹ûÓëÒª¶ÁµÄÏÂÒ»¸öÐòÁÐºÅÏàµÈ£¬Ôò¶ÁÕâ¿é»º³åÇø
+		//å¦‚æžœä¸Žè¦è¯»çš„ä¸‹ä¸€ä¸ªåºåˆ—å·ç›¸ç­‰ï¼Œåˆ™è¯»è¿™å—ç¼“å†²åŒº
 		if(pBuffer->sequence == pContext->currentReadSequence)
 		{
 			return pBuffer;
 		}
 
-		//Èç¹û²»ÏëµÈ£¬ÔòËµÃ÷Ã»ÓÐ°´Ë³Ðò½ÓÊÕÊý¾Ý£¬½«Õâ¿é»º³åÇø±£´æµ½Á¬½ÓµÄOutOfOrderReadsÖÐ
-		//ÁÐ±íÖÐµÄ»º³åÇøÊ±°´ÕÕÆäÐòÁÐºÅ´ÓÐ¡µ½´óµÄË³ÐòÅÅÁÐµÄ
+		//å¦‚æžœä¸æƒ³ç­‰ï¼Œåˆ™è¯´æ˜Žæ²¡æœ‰æŒ‰é¡ºåºæŽ¥æ”¶æ•°æ®ï¼Œå°†è¿™å—ç¼“å†²åŒºä¿å­˜åˆ°è¿žæŽ¥çš„OutOfOrderReadsä¸­
+		//åˆ—è¡¨ä¸­çš„ç¼“å†²åŒºæ—¶æŒ‰ç…§å…¶åºåˆ—å·ä»Žå°åˆ°å¤§çš„é¡ºåºæŽ’åˆ—çš„
 		pBuffer->pNext = NULL;
 		CIOCPBuffer* ptr = pContext->pOutOfOrderReads;
 		CIOCPBuffer* pPre = NULL;
@@ -383,7 +399,7 @@ CIOCPBuffer* CIOCPServer::GetNextReadBuffer(CIOCPContext *pContext, CIOCPBuffer 
 			ptr = ptr->pNext;
 		}
 
-		//Ó¦¸Ã²åÈëµ½±íÍ·
+		//åº”è¯¥æ’å…¥åˆ°è¡¨å¤´
 		if (ptr == NULL && pPre != NULL)
 		{
 			pBuffer->pNext = NULL;
@@ -395,7 +411,7 @@ CIOCPBuffer* CIOCPServer::GetNextReadBuffer(CIOCPContext *pContext, CIOCPBuffer 
 		}
 	}
 
-	//¼ì²é±íÍ·ÔªËØµÄÐòÁÐºÅ£¬Èç¹ûÓëÒª¶ÁµÄÐòÁÐºÅÒ»ÖÂ£¬¾Í½«Ëü´Ó±íÖÐÒÆ³ý£¬·µ»Ø¸øÓÃ»§
+	//æ£€æŸ¥è¡¨å¤´å…ƒç´ çš„åºåˆ—å·ï¼Œå¦‚æžœä¸Žè¦è¯»çš„åºåˆ—å·ä¸€è‡´ï¼Œå°±å°†å®ƒä»Žè¡¨ä¸­ç§»é™¤ï¼Œè¿”å›žç»™ç”¨æˆ·
 	CIOCPBuffer *pReadBuffer = pContext->pOutOfOrderReads;
 	if(pReadBuffer!=NULL && (pReadBuffer->sequence == pContext->currentReadSequence))
 	{
@@ -480,12 +496,14 @@ BOOL CIOCPServer::PostSend(CIOCPContext* pContext, CIOCPBuffer* pBuffer)
 	return TRUE;
 }
 
-BOOL CIOCPServer::Start(char *pBindAddr, int port)
+BOOL CIOCPServer::Start()
 {
-	if(m_Started)
-	{
-		return FALSE;
-	}
+	return Start(m_port);
+}
+BOOL CIOCPServer::Start(int port)
+{
+	if(m_Started)	return FALSE;
+	
 
 	m_port = port;
 	m_Shutdown = FALSE;
@@ -543,26 +561,15 @@ DWORD WINAPI CIOCPServer::_ListenThreadProc(LPVOID lpParam)
 {
 	CIOCPServer *pServer = (CIOCPServer*) lpParam;
 
-	CIOCPBuffer *pBuffer;
-	for(int i = 0; i< pServer->m_InitialAccepts; i++)
-	{
-		pBuffer = pServer->AllocateBuffer(BUFFER_SIZE);
-		if (pBuffer == NULL)
-		{
-			return -1;
-		}
+	//åˆå§‹æ—¶ æŠ•é€’ä¸€æ‰¹Acceptäº‹ä»¶
+	pServer->PostMoreAccept(pServer->m_InitialAccepts);
 
-		pServer->InsertPendingAccept(pBuffer);
-		pServer->PostAccept(pBuffer);
-	}
-
-
-	HANDLE hWaitEvents[2 + MAX_THREAD];
+	HANDLE hWaitEvents[Offset2WorkerThread + MAX_THREAD];
 	int nEventCount = 0;
-	int Offset2WorkerThread = 2;
-
+	
 	hWaitEvents[nEventCount++] = pServer->m_hAcceptEvent;
 	hWaitEvents[nEventCount++] = pServer->m_hRepostEvent;
+	hWaitEvents[nEventCount++] = pServer->m_hShutdownEvent;
 
 	for (int i = 0; i<MAX_THREAD; i++)
 	{
@@ -571,82 +578,42 @@ DWORD WINAPI CIOCPServer::_ListenThreadProc(LPVOID lpParam)
 
 	while(TRUE)
 	{
-		int nIndex = ::WSAWaitForMultipleEvents(nEventCount,hWaitEvents,FALSE,60*1000,FALSE);
+		int nIndex = ::WSAWaitForMultipleEvents(nEventCount,hWaitEvents,FALSE,6*1000,FALSE);
 
-		if(pServer->m_Shutdown || nIndex == WSA_WAIT_FAILED)
+		//æœåŠ¡å™¨å…³é—­ ç¨‹åºå†…éƒ¨è®¾ç½®
+		if(nIndex == WSA_WAIT_FAILED || nIndex == WAIT_OBJECT_0+EN_SHUTDOWN_EVENT || pServer->m_Shutdown)
 		{
-			pServer->CloseAllConnections();
-			::Sleep(0);
-			::closesocket(pServer->m_sListen);
-			pServer->m_sListen = INVALID_SOCKET;
-			::Sleep(0);
-
-			for(int i = 0; i<MAX_THREAD; i++)
-			{
-				::PostQueuedCompletionStatus(pServer->m_hCompletion,-1,0,NULL);
-			}
-
-			::WaitForMultipleObjects(MAX_THREAD,&hWaitEvents[Offset2WorkerThread],TRUE,5*1000);
-
-			for (int i = 0; i<MAX_THREAD; i++)
-			{
-				::CloseHandle(hWaitEvents[i+Offset2WorkerThread]);
-			}
-
-			::CloseHandle(pServer->m_hCompletion);
-			pServer->FreeBuffers();
-			pServer->FreeContexts();
+			CloseListenThread(pServer, &hWaitEvents[Offset2WorkerThread]);
 			::ExitThread(0);
 		}
 
 		if (nIndex == WSA_WAIT_TIMEOUT)
 		{
-			pBuffer = pServer->m_pPendingAcceptList;
-			while(pBuffer != NULL)
-			{
-				int seconds;
-				int len = sizeof(seconds);
-				::getsockopt(pBuffer->sClient,SOL_SOCKET,SO_CONNECT_TIME,(char*)&seconds,&len);
-
-				if(seconds != -1 && seconds > 2*60)
-				{
-					::closesocket(pBuffer->sClient);
-					pBuffer->sClient = INVALID_SOCKET;
-				}
-
-				pBuffer = pBuffer->pNext;
-			}
-		}else
-		{
-			nIndex = nIndex - WAIT_OBJECT_0;
-			WSANETWORKEVENTS ne;
-			int limit = 0;
-			if(nIndex == 0)
-			{
-				::WSAEnumNetworkEvents(pServer->m_sListen,hWaitEvents[nIndex],&ne);
-				if(ne.lNetworkEvents & FD_ACCEPT)
-				{
-					limit = 50;
-				}
-			}else if (nIndex == 1)
-			{
-				limit = InterlockedExchange(&pServer->m_ReportCount,0);
-			}else if (nIndex > 1)
-			{
-				pServer->m_Shutdown = TRUE;
-				continue;
-			}
-
-			for (int i = 0; i<limit && pServer->m_PendingAcceptCount < pServer->m_MaxAccepts; i++)
-			{
-				pBuffer = pServer->AllocateBuffer(BUFFER_SIZE);
-				if (pBuffer != NULL)
-				{
-					pServer->InsertPendingAccept(pBuffer);
-					pServer->PostAccept(pBuffer);
-				}
-			}
+			pServer->RemoveTimeoutAccepts();
+			continue;
 		}
+
+		WSANETWORKEVENTS ne;
+		int limit = 0;
+		switch(nIndex-WAIT_OBJECT_0)
+		{
+		case EN_ACCEPT_EVENT:
+			::WSAEnumNetworkEvents(pServer->m_sListen,hWaitEvents[nIndex],&ne);
+			if(ne.lNetworkEvents & FD_ACCEPT)
+			{
+				limit = pServer->m_InitialAccepts;
+			}
+			break;
+		case EN_REPOST_EVENT:
+			limit = InterlockedExchange(&pServer->m_ReportCount,0);
+			break;
+		default:
+			pServer->m_Shutdown = TRUE;
+			continue;
+			break;
+		}
+
+		pServer->PostMoreAccept(limit);
 	}
 	return 0;
 }
@@ -654,24 +621,24 @@ DWORD WINAPI CIOCPServer::_ListenThreadProc(LPVOID lpParam)
 DWORD WINAPI CIOCPServer::_WorkerThreadProc(LPVOID lpParam)
 {
 	CIOCPServer *pServer = (CIOCPServer*) lpParam;
-
-	CIOCPBuffer *pBuffer;
-	DWORD key;
+	CIOCPBuffer *pBuffer = NULL;
+	CIOCPContext *pContext = NULL;
 	DWORD trans;
 	LPOVERLAPPED pOl;
-
+	
 	while(TRUE)
 	{
 		BOOL bOk = ::GetQueuedCompletionStatus(pServer->m_hCompletion,&trans
-			,(LPDWORD)&key,(LPOVERLAPPED*)&pOl,WSA_INFINITE);
-
-		if (trans == -1)
-		{
-			::ExitThread(0);
-		}
+			,(LPDWORD)&pContext,(LPOVERLAPPED*)&pOl,WSA_INFINITE);
 
 		pBuffer = CONTAINING_RECORD(pOl,CIOCPBuffer,ol);
 		int error = NO_ERROR;
+		//ç›‘å¬çº¿ç¨‹é€šçŸ¥é€šè¿‡çº¿ç¨‹é€€å‡º
+		if (trans == ERR_SHUT_DOWN)
+		{
+			::ExitThread(0);
+		}
+		//å‡½æ•°æ‰§è¡Œå¤±è´¥æ—¶ èŽ·å–é”™è¯¯ç 
 		if(bOk == FALSE)
 		{
 			SOCKET s;
@@ -680,9 +647,7 @@ DWORD WINAPI CIOCPServer::_WorkerThreadProc(LPVOID lpParam)
 				s = pServer->m_sListen;
 			}else
 			{
-				if(key == 0)
-					break;
-				s = ((CIOCPContext*)key)->s;
+				s = pContext->s;
 			}
 
 			DWORD falgs = 0;
@@ -691,7 +656,8 @@ DWORD WINAPI CIOCPServer::_WorkerThreadProc(LPVOID lpParam)
 				error = ::WSAGetLastError();
 			}
 		}
-		pServer->HandleIO((CIOCPContext*)key,pBuffer,trans,error);
+
+		pServer->HandleIO(pContext,pBuffer,trans,error);
 	}
 
 	return 0;
@@ -718,7 +684,7 @@ void CIOCPServer::_HandleAccept(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DW
 
 	if (error != NO_ERROR || dwTrans == 0)
 	{
-		CloseBufferClient(pBuffer);
+		CloseClientSocket(pBuffer);
 		ReleaseBuffer(pBuffer);
 	}else
 	{
@@ -731,7 +697,7 @@ void CIOCPServer::_HandleAccept(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DW
 				LPSOCKADDR pLocalAddr,pRemoteAddr;
 				m_lpfnGetAcceptExSockaddrs(
 					pBuffer->buff,
-					pBuffer->nlen - ((sizeof(sockaddr_in) + 16) + 2),
+					pBuffer->nlen - ((sizeof(sockaddr_in) + 16) * 2),
 					sizeof(sockaddr_in) + 16,
 					sizeof(sockaddr_in) + 16,
 					(SOCKADDR **)&pLocalAddr,
@@ -766,7 +732,7 @@ void CIOCPServer::_HandleAccept(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DW
 			}
 		}else
 		{
-			CloseBufferClient(pBuffer);
+			CloseClientSocket(pBuffer);
 		}
 		ReleaseBuffer(pBuffer);
 	}
@@ -798,9 +764,9 @@ void CIOCPServer::_HandleRead(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWOR
 	if (dwTrans == 0)
 	{
 		pBuffer->nlen = 0;
-		OnConnectionClosing(pContext,pBuffer);
 		CloseAConnection(pContext);
 		ReleaseContextAndBuffer(pContext, pBuffer);
+		OnConnectionClosing(pContext,pBuffer);
 	}else
 	{
 		pBuffer->nlen = dwTrans;
@@ -853,7 +819,7 @@ void CIOCPServer::_HandleWrite(CIOCPContext *pContext, CIOCPBuffer *pBuffer, DWO
 
 void CIOCPServer::_HandleAcceptError(CIOCPBuffer * pBuffer)
 {
-	CloseBufferClient(pBuffer);
+	CloseClientSocket(pBuffer);
 	ReleaseBuffer(pBuffer);
 }
 
@@ -862,15 +828,6 @@ void CIOCPServer::_HandleReadWriteError(CIOCPContext *pContext,CIOCPBuffer *pBuf
 	OnConnectionError(pContext,pBuffer,error);
 	CloseAConnection(pContext);
 	ReleaseContextAndBuffer(pContext,pBuffer);
-}
-
-void CIOCPServer::CloseBufferClient( CIOCPBuffer * pBuffer )
-{
-	if (pBuffer->sClient != INVALID_SOCKET)
-	{
-		::closesocket(pBuffer->sClient);
-		pBuffer->sClient = INVALID_SOCKET;
-	}
 }
 
 void CIOCPServer::ReleaseContextAndBuffer( CIOCPContext * pContext, CIOCPBuffer * pBuffer )
@@ -893,4 +850,76 @@ BOOL CIOCPServer::SendText(CIOCPContext *pContext, char *pszText, int len)
 	}
 
 	return FALSE;
+}
+
+void CIOCPServer::CloseListenThread( CIOCPServer * pServer, HANDLE * hWaitEvents)
+{
+	pServer->CloseAllConnections();
+	::Sleep(0);
+	::closesocket(pServer->m_sListen);
+	pServer->m_sListen = INVALID_SOCKET;
+	::Sleep(0);
+
+	for(int i = 0; i<MAX_THREAD; i++)
+	{
+		::PostQueuedCompletionStatus(pServer->m_hCompletion,ERR_SHUT_DOWN,0,NULL);
+	}
+
+	::WaitForMultipleObjects(MAX_THREAD,hWaitEvents,TRUE,5*1000);
+
+	for (int i = 0; i<MAX_THREAD; i++)
+	{
+		::CloseHandle(hWaitEvents[i]);
+	}
+
+	::CloseHandle(pServer->m_hCompletion);
+	pServer->FreeBuffers();
+	pServer->FreeContexts();
+}
+
+BOOL CIOCPServer::RemoveTimeoutAccepts()
+{
+	CIOCPBuffer *pBuffer = m_pPendingAcceptList;
+	while(pBuffer != NULL)
+	{
+		int seconds;
+		int len = sizeof(seconds);
+		::getsockopt(pBuffer->sClient,SOL_SOCKET,SO_CONNECT_TIME,(char*)&seconds,&len);
+
+		if(seconds != -1 && seconds > 2*60)
+		{
+			CloseClientSocket(pBuffer);
+		}
+
+		pBuffer = pBuffer->pNext;
+	}	
+	return TRUE;
+}
+
+void CIOCPServer::CloseClientSocket( CIOCPBuffer * pBuffer )
+{
+	if (pBuffer->sClient != INVALID_SOCKET)
+	{
+		::closesocket(pBuffer->sClient);
+		pBuffer->sClient = INVALID_SOCKET;
+	}
+}
+
+BOOL CIOCPServer::PostMoreAccept( int limit)
+{
+	CIOCPBuffer *pBuffer;
+	for (int i = 0; i<limit; i++)
+	{
+		if (m_PendingAcceptCount >= m_MaxAccepts)
+			break;
+
+		pBuffer = AllocateBuffer(BUFFER_SIZE);
+		if (pBuffer != NULL)
+		{
+			InsertPendingAccept(pBuffer);
+			PostAccept(pBuffer);
+		}
+	}
+
+	return TRUE;
 }
