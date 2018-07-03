@@ -67,7 +67,7 @@ void CIOCPServer::InitCfg()
 	m_InitialReads = 4;
 	m_MaxAccepts = 100;
 	m_MaxSends = 20;
-	m_MaxConnections = 2000;
+	m_MaxConnections = 20000;
 	m_MaxFreeBuffers = 200;
 	m_MaxFreeContexts = 1000;
 }
@@ -389,7 +389,7 @@ CIOCPBuffer* CIOCPServer::GetNextReadBuffer(CIOCPContext *pContext, CIOCPBuffer 
 		//列表中的缓冲区时按照其序列号从小到大的顺序排列的
 		pBuffer->pNext = NULL;
 		CIOCPBuffer* ptr = pContext->pOutOfOrderReads;
-		CIOCPBuffer* pPre = NULL;
+		CIOCPBuffer* pPre = ptr;
 		while(ptr != NULL)
 		{
 			if(pBuffer->sequence < ptr->sequence)
@@ -400,10 +400,10 @@ CIOCPBuffer* CIOCPServer::GetNextReadBuffer(CIOCPContext *pContext, CIOCPBuffer 
 		}
 
 		//应该插入到表头
-		if (ptr == NULL && pPre != NULL)
+		if (pPre == NULL)
 		{
-			pBuffer->pNext = NULL;
-			pPre->pNext = pBuffer;
+			pBuffer->pNext = pContext->pOutOfOrderReads;
+			pContext->pOutOfOrderReads = pBuffer;
 		}else
 		{
 			pBuffer->pNext = pPre->pNext;
@@ -825,9 +825,9 @@ void CIOCPServer::_HandleAcceptError(CIOCPBuffer * pBuffer)
 
 void CIOCPServer::_HandleReadWriteError(CIOCPContext *pContext,CIOCPBuffer *pBuffer,int error)
 {
-	OnConnectionError(pContext,pBuffer,error);
 	CloseAConnection(pContext);
 	ReleaseContextAndBuffer(pContext,pBuffer);
+	OnConnectionError(pContext,pBuffer,error);
 }
 
 void CIOCPServer::ReleaseContextAndBuffer( CIOCPContext * pContext, CIOCPBuffer * pBuffer )
