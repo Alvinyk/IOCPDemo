@@ -24,7 +24,7 @@ DWORD WINAPI CLogUtil::WriteThreadProc(LPVOID lpParam)
 		if (result == WAIT_OBJECT_0)
 		{ 
 			string info = logUtil->getLogInfo();
-			while (info.empty())
+			while (info.empty() == false)
 			{
 				logUtil->Write2File(info);
 				info = logUtil->getLogInfo();
@@ -118,6 +118,7 @@ void  CLogUtil::addLogInfo(string info)
 	LeaveCriticalSection(&m_FreeBufferListLock);
 	SetEvent(m_hWriteLogEvent);
 }
+
 string CLogUtil::getLogInfo()
 {
 	string info = "";
